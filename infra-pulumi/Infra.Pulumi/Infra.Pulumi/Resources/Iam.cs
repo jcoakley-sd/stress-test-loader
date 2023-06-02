@@ -5,14 +5,22 @@ namespace Infra.Pulumi.Resources;
 
 class Iam : ComponentResource
 {
-    [Output]
     public Output<string> StressTestClientReadProfileName { get; set; }
-    public Iam(string name, Aws.Provider provider, string region, ComponentResourceOptions opts = null) : base("stl:aws:Iam", name, opts)
+
+    public Iam(StressConfig cfg, ComponentResourceOptions opts) : base("stl:aws:Iam", $"Iam-{cfg.Region}", opts)
     {
-      // Create an IAM
-        var currentCallerIdentity = Output.Create(Aws.GetCallerIdentity.InvokeAsync());
-        var currentRegion = Output.Create(Aws.GetRegion.InvokeAsync());
-        var stressTestClientReadRole = new Aws.Iam.Role("stressTestClientReadRole-" + region, new Aws.Iam.RoleArgs
+      // jcoakley: consider folding the RolePolicy into the Role definition
+      // also, consider using Amazon.Auth.AccessControlPolicy's Policy class to construct iam policies
+      /*
+       *        AssumeRolePolicy = new Policy().WithStatements(
+                    new Statement(Statement.StatementEffect.Allow)
+                        .WithId(null)
+                        .WithActionIdentifiers(new ActionIdentifier("sts:AssumeRole"))
+                        .WithPrincipals(new Principal(Principal.SERVICE_PROVIDER, "ec2.amazonaws.com"))
+                        .WithConditions(assumeRolePolicyCondition))
+                    .ToJson(),
+       */
+      var stressTestClientReadRole = new Aws.Iam.Role($"stressTestClientReadRole-{cfg.Region}", new Aws.Iam.RoleArgs
         {
             AssumeRolePolicy = @"{
   ""Version"": ""2012-10-17"",
@@ -28,27 +36,22 @@ class Iam : ComponentResource
   ]
 }
 ",
-            Tags = 
+            Tags =
             {
                 { "tag-key", "stress_test" },
             },
-        }, new CustomResourceOptions
-        {
-          Provider = provider,
-          Parent = this
-        });
-        var stressTestClientReadProfile = new Aws.Iam.InstanceProfile("stressTestClientReadProfile-" + region, new Aws.Iam.InstanceProfileArgs
+        }, new CustomResourceOptions { Parent = this });
+
+        var stressTestClientReadProfile = new Aws.Iam.InstanceProfile($"stressTestClientReadProfile-{cfg.Region}", new Aws.Iam.InstanceProfileArgs
         {
             Role = stressTestClientReadRole.Name,
-        }, new CustomResourceOptions
-        {
-          Provider = provider,
-          Parent = this
-        });
+        }, new CustomResourceOptions { Parent = this });
         this.StressTestClientReadProfileName = stressTestClientReadProfile.Name;
-        var stressTestClientRead = new Aws.Iam.RolePolicy("stressTestClientRead-" + region, new Aws.Iam.RolePolicyArgs
+
+        var stressTestClientRead = new Aws.Iam.RolePolicy($"stressTestClientRead-{cfg.Region}", new Aws.Iam.RolePolicyArgs
         {
             Role = stressTestClientReadRole.Id,
+            // jcoakley: we should create these buckets in pulumi and then reference them here
             Policy = @"{
   ""Version"": ""2012-10-17"",
   ""Statement"": [
@@ -57,24 +60,20 @@ class Iam : ComponentResource
         ""s3:GetObject""
       ],
       ""Effect"": ""Allow"",
-      ""Resource"": ""arn:aws:s3:::stresstest-client/*""
+      ""Resource"": ""arn:aws:s3:::cubestressclientartifactbucket*/*""
     },
     {
       ""Action"": [
         ""s3:PutObject""
       ],
       ""Effect"": ""Allow"",
-      ""Resource"": ""arn:aws:s3:::stresstest-client-log/*""
+      ""Resource"": ""arn:aws:s3:::cubestresstest-log/*""
     }
   ]
 }
 ",
-        }, new CustomResourceOptions
-        {
-          Provider = provider,
-          Parent = this
-        });
-        
+        }, new CustomResourceOptions { Parent = this });
+
         RegisterOutputs();
     }
 }

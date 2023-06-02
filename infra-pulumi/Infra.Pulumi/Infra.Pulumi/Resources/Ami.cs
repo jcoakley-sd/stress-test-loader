@@ -6,14 +6,10 @@ namespace Infra.Pulumi.Resources;
 
 class Ami : ComponentResource
 {
-    [Output]
     public Output<string> AmiId { get; set; }
-    
-    public Ami(string name, Aws.Provider provider, string region, ComponentResourceOptions opts = null) : base("stl:aws:Ami", name, opts)
-    {
-        // Set up Config
-        var config = new Config();
 
+    public Ami(StressConfig cfg, ComponentResourceOptions opts) : base("stl:aws:Ami", $"Ami-{cfg.Region}", opts)
+    {
         // Set up AMI
         var amiFilter = new Aws.Ec2.Inputs.GetAmiFilterArgs
         {
@@ -28,19 +24,15 @@ class Ami : ComponentResource
             MostRecent = true
         })).Apply(result => result.Id);
 
-        var stl = new Aws.Ec2.AmiCopy("stl-" + region, new Aws.Ec2.AmiCopyArgs
+        var stl = new Aws.Ec2.AmiCopy($"stl-{cfg.Region}", new Aws.Ec2.AmiCopyArgs
         {
-            Name = config.Require("name"),
+            Name = cfg.Name,
             SourceAmiId = amiId,
-            SourceAmiRegion = config.Require("source_ami_region")
-        }, new CustomResourceOptions
-        {
-            Provider = provider,
-            Parent = this
-        });
+            SourceAmiRegion = cfg.SourceAmiRegion,
+        }, new CustomResourceOptions { Parent = this });
 
         this.AmiId = stl.Id;
-        
+
         RegisterOutputs();
     }
 }

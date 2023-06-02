@@ -57,42 +57,40 @@ public class DeployPulumiCommand
             Environment.SetEnvironmentVariable(k, v);
         }
 
+        // jcoakley: consider prompting the user for these env vars if they're not found, or exiting with a warning about which specific vars are missing
+        // also consider renaming the variables to be UPPER_CASE_WITH_UNDERSCORES and have a consistent prefix, e.g. STRESS_TEST_LOADER_PUBLIC_KEY, STRESS_TEST_LOADER_REGIONS, etc
+        var localPublicIp = Environment.GetEnvironmentVariable("stress_test_loader_allowed_cidr");
+        var publicKey = Environment.GetEnvironmentVariable("public_key");
+
+        var desiredCapacity = Environment.GetEnvironmentVariable("desired_capacity") ?? "2";
+        var regions = Environment.GetEnvironmentVariable("regions") ?? "us-west-2";
+
+        var cfg = new StressConfig
+        {
+            Environment = ProjectName,
+            DesiredCapacity = int.Parse(desiredCapacity),
+            PublicKey = publicKey,
+            AllowedCidrBlocks = localPublicIp.Split(",").ToList(),
+        };
+
         #region Deploy
         var program = PulumiFn.Create(async () =>
         {
-            var config = new Config();
-            List<string> regionList = new List<string>();
-            if (config.Get("regions") != null)
-            {
-                string regions = config.Get("regions")!;
-                // Remove the brackets and any whitespace
-                string trimmedInput = regions.Trim('[', ']', ' ');
-                // Split the string by commas to get individual elements
-                string[] elements = trimmedInput.Split(',');
-                regionList = new List<string>(elements);
-                for (int i = 0; i < regionList.Count; i++)
-                {
-                    regionList[i] = regionList[i].Trim(' ');
-                }
-            }
-            else
-            {
-                regionList.Add("us-west-2");
-            }
-            
+            var regionList = regions.Split(',').ToList();
+
             foreach (var region in regionList)
             {
                 var provider = new Provider(region, new()
                 {
                     Region = region,
                 });
+                cfg.Region = region;
 
-                var ami = new Ami($"stl-ami-{region}", provider, region);
-                var iam = new Iam($"stl-iam-{region}", provider, region);
-                var vpc = new Vpc($"stl-vpc-{region}", provider, region);
-                var autoscaling = new Autoscaling($"stl-autoscaling-{region}", provider, region, ami.AmiId,
-                    iam.StressTestClientReadProfileName,vpc.MainVpcId, vpc.DefaultSecurityGroupId, 
-                    vpc.MainSubnetIds);
+                var ami = new Ami(cfg, new ComponentResourceOptions { Provider = provider });
+                var iam = new Iam(cfg, new ComponentResourceOptions { Provider = provider });
+                var vpc = new Vpc(cfg, new ComponentResourceOptions { Provider = provider });
+                var autoscaling = new Autoscaling(cfg, ami.AmiId, iam.StressTestClientReadProfileName,
+                    vpc.MainVpcId, vpc.MainSubnetIds, new ComponentResourceOptions { Provider = provider });
             }
         });
 
@@ -109,8 +107,6 @@ public class DeployPulumiCommand
         return await DeployHelpers.UpdatePulumiAsync(program, ProjectName, StackName, NoRefresh, cancellationToken);
         #endregion
     }
-
-
 }
 
 

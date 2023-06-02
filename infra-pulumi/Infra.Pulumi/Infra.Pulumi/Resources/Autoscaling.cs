@@ -1,136 +1,99 @@
 ﻿using Pulumi;
 using Aws = Pulumi.Aws;
-using System.IO;
 using System.Text.Json;
 
 namespace Infra.Pulumi.Resources;
 
 class Autoscaling : ComponentResource
 {
-    [Output]
-    public Output<string> WebAutoScalingGroupName { get; set; }
-    [Output]
-    public Output<string> KeyPairName { get; set; }
-
-    public Aws.AutoScaling.Group group;
-
-    public Autoscaling(string name, Aws.Provider provider, string region, Input<string> amiId, 
-        Input<string> stressTestClientReadProfileName, Input<string> mainVpcId, Input<string> defaultSecurityGroupId,
-        InputList<string> mainSubnetIds, ComponentResourceOptions opts = null) : base("stl:aws:Autoscaling", name, null)
+    public Autoscaling(StressConfig cfg, Input<string> amiId, Input<string> stressTestClientReadProfileName, Input<string> mainVpcId,
+        InputList<string> mainSubnetIds, ComponentResourceOptions opts) : base("stl:aws:Autoscaling", $"Ami-{cfg.Region}", opts)
     {
-        // Set up Config
-        var config = new Config();
-        
         // Create an AutoScaling Group
-        var sdStresstest = new Aws.Ec2.KeyPair("sdStresstest-" + region, new Aws.Ec2.KeyPairArgs
+        var sdStresstest = new Aws.Ec2.KeyPair($"sdStresstest-{cfg.Region}", new Aws.Ec2.KeyPairArgs
         {
-            PublicKey = config.Get("public_key") ?? Environment.GetEnvironmentVariable("public_key"),
-        }, new CustomResourceOptions
-        {
-            Provider = provider,
-            Parent = this
-        });
-        this.KeyPairName = sdStresstest.KeyName;
+            PublicKey = cfg.PublicKey,
+        }, new CustomResourceOptions { Parent = this });
 
-        var stress_test_loader_allowed_cidr = config.Require("stress_test_loader_allowed_cidr");
-        var cirdBlocks = new InputList<string>
-        {
-            stress_test_loader_allowed_cidr,
-        };
-        var prometheus_node_allowed_cidr = config.Require("prometheus_node_allowed_cidr");
-        var prometheusCirdBlocks = new InputList<string>
-        {
-            prometheus_node_allowed_cidr,
-        };
-        var stresstestSecurityGroup = new Aws.Ec2.SecurityGroup("stresstestSecurityGroup-" + region, new Aws.Ec2.SecurityGroupArgs
+        var stresstestSecurityGroup = new Aws.Ec2.SecurityGroup($"stresstestSecurityGroup-{cfg.Region}", new Aws.Ec2.SecurityGroupArgs
         {
             VpcId = mainVpcId,
-            Ingress = 
+            Ingress =
             {
                 new Aws.Ec2.Inputs.SecurityGroupIngressArgs
                 {
                     FromPort = 0,
                     ToPort = 8,
                     Protocol = "icmp",
-                    CidrBlocks = cirdBlocks,
+                    CidrBlocks = cfg.AllowedCidrBlocks,
                 },
                 new Aws.Ec2.Inputs.SecurityGroupIngressArgs
                 {
                     FromPort = 22,
                     ToPort = 22,
                     Protocol = "TCP",
-                    CidrBlocks = cirdBlocks,
+                    CidrBlocks = cfg.AllowedCidrBlocks,
                 },
                 new Aws.Ec2.Inputs.SecurityGroupIngressArgs
                 {
-                    FromPort = int.Parse(config.Require("stress_test_loader_port")),
-                    ToPort = int.Parse(config.Require("stress_test_loader_port")),
+                    FromPort = cfg.StlPort,
+                    ToPort = cfg.StlPort,
                     Protocol = "TCP",
-                    CidrBlocks = cirdBlocks,
+                    CidrBlocks = cfg.AllowedCidrBlocks,
                 },
                 new Aws.Ec2.Inputs.SecurityGroupIngressArgs
                 {
                     FromPort = 9100,
                     ToPort = 9100,
                     Protocol = "TCP",
-                    CidrBlocks = prometheusCirdBlocks,
+                    CidrBlocks = cfg.PrometheusAllowedCidrBlocks,
                 },
                 new Aws.Ec2.Inputs.SecurityGroupIngressArgs
                 {
                     FromPort = 9301,
                     ToPort = 9301,
                     Protocol = "TCP",
-                    CidrBlocks = prometheusCirdBlocks,
+                    CidrBlocks = cfg.PrometheusAllowedCidrBlocks,
                 },
                 new Aws.Ec2.Inputs.SecurityGroupIngressArgs
                 {
-                    FromPort = int.Parse(config.Require("stress_test_loader_port")),
-                    ToPort = int.Parse(config.Require("stress_test_loader_port")),
+                    FromPort = cfg.StlPort,
+                    ToPort = cfg.StlPort,
                     Protocol = "TCP",
-                    CidrBlocks = 
-                    {
-                        config.Require("cidr_block"),
-                    },
+                    CidrBlocks = cfg.CidrBlock,
                 },
             },
-            Egress = 
+            Egress =
             {
                 new Aws.Ec2.Inputs.SecurityGroupEgressArgs
                 {
                     FromPort = 0,
                     ToPort = 0,
                     Protocol = "-1",
-                    CidrBlocks = 
-                    {
-                        config.Require("egress_allowed_cidr"),
-                    },
+                    CidrBlocks = cfg.EgressAllowedCidr,
                 },
             },
-        }, new CustomResourceOptions
-        {
-            Provider = provider,
-            Parent = this
-        });
-        
+        }, new CustomResourceOptions{ Parent = this });
+
         // Prepare user data
         var userData = File.ReadAllText("./Resources/stressclient-template.sh");
-        userData = userData.Replace("${stress_test_loader_allowed_cidr}", config.Require("stress_test_loader_allowed_cidr"));
-        userData = userData.Replace("${stress_test_loader_port}", config.Require("stress_test_loader_port"));
-        userData = userData.Replace("${environment}", config.Require("environment"));
-        userData = userData.Replace("${telegraf_username}", config.Require("telegraf_username"));
-        userData = userData.Replace("${telegraf_password}", config.Require("telegraf_password"));
-        userData = userData.Replace("${telegraf_url}", config.Require("telegraf_url"));
+        userData = userData.Replace("${stress_test_loader_port}", cfg.StlPort.ToString());
+        userData = userData.Replace("${environment}", cfg.Environment);
+        userData = userData.Replace("${telegraf_username}", cfg.TelegrafUsername);
+        userData = userData.Replace("${telegraf_password}", cfg.TelegrafPassword);
+        userData = userData.Replace("${telegraf_url}", cfg.TelegrafUrl);
 
-        var stressTestLoaderLaunchConfiguration = new Aws.Ec2.LaunchConfiguration("stressTestLoaderLaunchConfiguration-" + region, new Aws.Ec2.LaunchConfigurationArgs
+        var stressTestLoaderLaunchConfiguration = new Aws.Ec2.LaunchConfiguration($"stressTestLoaderLaunchConfiguration-{cfg.Region}",
+            new Aws.Ec2.LaunchConfigurationArgs
         {
-            NamePrefix = $"stress_test_loader-{config.Require("environment")}",
+            NamePrefix = $"stress_test_loader-{cfg.Environment}",
             ImageId = amiId.Apply(x => x!.ToString())!,
-            InstanceType = config.Require("instance_type"),
+            InstanceType = cfg.InstanceType,
             // DONE: iam
             IamInstanceProfile = stressTestClientReadProfileName.Apply(x => x!.ToString())!,
             AssociatePublicIpAddress = true,
             KeyName = sdStresstest.KeyName,
-            SecurityGroups = 
+            SecurityGroups =
             {
                 stresstestSecurityGroup.Id,
             },
@@ -142,24 +105,17 @@ class Autoscaling : ComponentResource
             },
             // DONE: user data
             UserData = userData,
-        }, new CustomResourceOptions
-        {
-            Provider = provider,
-            Parent = this
-        });
+        }, new CustomResourceOptions { Parent = this });
 
-        // var vpcZoneIdentifiers = new InputList<string>();
-        // vpcZoneIdentifiers.AddRange(mainSubnet.Select(__item => __item.Id).ToList());
-
-        var stressTestLoaderGroup = new Aws.AutoScaling.Group("stressTestLoaderGroup-" + region, new Aws.AutoScaling.GroupArgs
+        var stressTestLoaderGroup = new Aws.AutoScaling.Group($"stressTestLoaderGroup-{cfg.Region}", new Aws.AutoScaling.GroupArgs
         {
             LaunchConfiguration = stressTestLoaderLaunchConfiguration.Name,
             VpcZoneIdentifiers = mainSubnetIds,
             HealthCheckType = "EC2",
-            MinSize = int.Parse(config.Require("min_size")),
-            MaxSize = int.Parse(config.Require("max_size")),
-            DesiredCapacity = int.Parse(config.Require("desired_capacity")),
-            Tags = 
+            MinSize = cfg.MinSize,
+            MaxSize = cfg.MaxSize,
+            DesiredCapacity = cfg.DesiredCapacity,
+            Tags =
             {
                 new Aws.AutoScaling.Inputs.GroupTagArgs
                 {
@@ -191,39 +147,32 @@ class Autoscaling : ComponentResource
                 "GroupTerminatingInstances",
                 "GroupTotalInstances"
             },
-        }, new CustomResourceOptions
-        {
-            Provider = provider,
-            Parent = this
-        });
-        this.WebAutoScalingGroupName = stressTestLoaderGroup.Name;
-        StorePublicIpsToJson(stressTestLoaderGroup, amiId, provider);
-            
+        }, new CustomResourceOptions { Parent = this });
+
+        StorePublicIpsToJson(stressTestLoaderGroup, amiId, opts.Provider);
+
         // auto scale up policy
-        var stressTestLoaderUpPolicy = new Aws.AutoScaling.Policy("stressTestLoaderUpPolicy-" + region, new Aws.AutoScaling.PolicyArgs
+        var stressTestLoaderUpPolicy = new Aws.AutoScaling.Policy($"stressTestLoaderUpPolicy-{cfg.Region}",
+            new Aws.AutoScaling.PolicyArgs
         {
-            ScalingAdjustment = int.Parse(config.Require("up_scaling_adjustment")),
+            ScalingAdjustment = cfg.UpScalingAdjustment,
             AdjustmentType = "ChangeInCapacity",
             Cooldown = 300,
             AutoscalingGroupName = stressTestLoaderGroup.Name,
-        }, new CustomResourceOptions
-        {
-            Provider = provider,
-            Parent = this
-        });
+        }, new CustomResourceOptions { Parent = this });
+
         // auto scale down policy
-        var stressTestLoaderDownPolicy = new Aws.AutoScaling.Policy("stressTestLoaderDownPolicy-" + region, new Aws.AutoScaling.PolicyArgs
+        var stressTestLoaderDownPolicy = new Aws.AutoScaling.Policy($"stressTestLoaderDownPolicy-{cfg.Region}",
+            new Aws.AutoScaling.PolicyArgs
         {
-            ScalingAdjustment = int.Parse(config.Require("down_scaling_adjustment")),
+            ScalingAdjustment = cfg.DownScalingAdjustment,
             AdjustmentType = "ChangeInCapacity",
             Cooldown = 300,
             AutoscalingGroupName = stressTestLoaderGroup.Name,
-        }, new CustomResourceOptions
-        {
-            Provider = provider,
-            Parent = this
-        });
-        var stressTestLoaderUpMetricAlarm = new Aws.CloudWatch.MetricAlarm("stressTestLoaderUpMetricAlarm-" + region, new Aws.CloudWatch.MetricAlarmArgs
+        }, new CustomResourceOptions { Parent = this });
+
+        var stressTestLoaderUpMetricAlarm = new Aws.CloudWatch.MetricAlarm($"stressTestLoaderUpMetricAlarm-{cfg.Region}",
+            new Aws.CloudWatch.MetricAlarmArgs
         {
             ComparisonOperator = "GreaterThanOrEqualToThreshold",
             EvaluationPeriods = 2,
@@ -231,22 +180,20 @@ class Autoscaling : ComponentResource
             Namespace = "AWS/EC2",
             Period = 120,
             Statistic = "Average",
-            Dimensions = 
+            Dimensions =
             {
                 { "AutoScalingGroupName", stressTestLoaderGroup.Name },
             },
             Threshold = 120,
             AlarmDescription = "Check whether EC2 instance CPU utilisation is over 80% on average",
-            AlarmActions = 
+            AlarmActions =
             {
                 stressTestLoaderUpPolicy.Arn,
             },
-        }, new CustomResourceOptions
-        {
-            Provider = provider,
-            Parent = this
-        });
-        var stressTestLoaderDownMetricAlarm = new Aws.CloudWatch.MetricAlarm("stressTestLoaderDownMetricAlarm-" + region, new Aws.CloudWatch.MetricAlarmArgs
+        }, new CustomResourceOptions { Parent = this });
+
+        var stressTestLoaderDownMetricAlarm = new Aws.CloudWatch.MetricAlarm($"stressTestLoaderDownMetricAlarm-{cfg.Region}",
+            new Aws.CloudWatch.MetricAlarmArgs
         {
             ComparisonOperator = "LessThanOrEqualToThreshold",
             EvaluationPeriods = 120,
@@ -255,25 +202,21 @@ class Autoscaling : ComponentResource
             Period = 120,
             Statistic = "Average",
             Threshold = 20,
-            Dimensions = 
+            Dimensions =
             {
                 { "AutoScalingGroupName", stressTestLoaderGroup.Name },
             },
             AlarmDescription = "Check whether EC2 instance CPU utilisation is under 20% on average",
-            AlarmActions = 
+            AlarmActions =
             {
                 stressTestLoaderDownPolicy.Arn,
             },
-        }, new CustomResourceOptions
-        {
-            Provider = provider,
-            Parent = this
-        });
-        
+        }, new CustomResourceOptions { Parent = this });
+
         RegisterOutputs();
     }
 
-    public void StorePublicIpsToJson(Aws.AutoScaling.Group stressTestLoaderGroup, Input<string> amiId, Aws.Provider provider)
+    public void StorePublicIpsToJson(Aws.AutoScaling.Group stressTestLoaderGroup, Input<string> amiId, ProviderResource provider)
     {
         stressTestLoaderGroup.Name.Apply(n =>
         {
@@ -288,20 +231,11 @@ class Autoscaling : ComponentResource
                         Values = amiId
                     }
                 }
-            }, new InvokeOptions()
-            {
-                Provider = provider
-            });
+            }, new InvokeOptions { Provider = provider });
             ec2PublicIps.AddRange(ec2Instances.Apply(instance => instance.PublicIps));
 
             var filePath = "/tmp/IP.json";
             var instancesList = new List<List<Dictionary<string, string>>>();
-            if (File.Exists(filePath))
-            {
-                // If the file exists, read and parse it
-                string existingJson = File.ReadAllText(filePath);
-                instancesList = JsonSerializer.Deserialize<List<List<Dictionary<string, string>>>>(existingJson);
-            }
 
             // Iterate over the instances and add their public IP addresses to the list
             ec2PublicIps.Apply(ips =>
@@ -316,10 +250,9 @@ class Autoscaling : ComponentResource
                     // Add the instance dictionary to the instances list
                     instancesList.Add(new List<Dictionary<string, string>> { instanceDict });
                 }
-                // Convert the instances to JSON
-                var json = JsonSerializer.Serialize(instancesList);
+
                 // Save the JSON to a file
-                File.WriteAllText(filePath, json);
+                File.WriteAllText(filePath, JsonSerializer.Serialize(instancesList));
                 Console.WriteLine($"IP addresses of EC2 instances saved to '{filePath}'.");
                 return ips;
             });
